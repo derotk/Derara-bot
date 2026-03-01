@@ -30,69 +30,42 @@ from telegram.ext import (
 )
 
 # ==================== CONFIGURATION ====================
-# Replace these with your actual values
 BOT_TOKEN = "8603569259:AAFxDtTxX96ZWOAhHhUjf7PhlmXodRauRIU"
-CHANNEL_ID = "@its_derara"  # or -1001234567890
-ADMIN_ID = 6437321990  # your Telegram user ID
+CHANNEL_ID = "@its_derara"
+ADMIN_ID = 6437321990
 
 # ==================== DATA STORAGE ====================
-# In-memory storage (dictionaries) as per requirements
-
-# Pending confessions: confession_id -> {"user_id": user_id, "text": text}
 pending_confessions: Dict[int, dict] = {}
-
-# Approved confessions: confession_id -> {"channel_message_id": int, "text": str, "user_id": int}
 approved_confessions: Dict[int, dict] = {}
-
-# Banned users: set of user IDs
 banned_users: set = set()
-
-# Reactions: confession_id -> {"❤️": set(user_ids), "😂": set(user_ids), ...}
 reactions: Dict[int, Dict[str, set]] = defaultdict(lambda: {"❤️": set(), "😂": set(), "😱": set(), "👎": set()})
-
-# Comments tracking: comment_id -> {"confession_id": int, "user_id": int, "message_id": int}
 comments_tracking: Dict[int, dict] = {}
-
-# Counters for auto-increment
 next_confession_id = 1
 next_comment_id = 1
-
-# Stats counters
 total_submitted = 0
 total_approved = 0
 total_rejected = 0
 total_comments = 0
 
 # ==================== FILTERING ====================
-# Bad words list (example, expand as needed)
 BAD_WORDS = {"badword1", "badword2", "offensive"}  # Replace with actual list
 
 def contains_bad_words(text: str) -> bool:
-    """Check if text contains any bad words (case-insensitive word boundary)."""
     text_lower = text.lower()
     for word in BAD_WORDS:
-        # Use regex to match whole word
         if re.search(rf'\b{re.escape(word)}\b', text_lower):
             return True
     return False
 
 def contains_link(text: str) -> bool:
-    """Detect if text contains a URL."""
-    # Simple URL pattern
     url_pattern = r'https?://[^\s]+|www\.[^\s]+'
     return bool(re.search(url_pattern, text, re.IGNORECASE))
 
 def contains_phone(text: str) -> bool:
-    """Detect if text contains a phone number (basic international format)."""
-    # Patterns: +1234567890, 123-456-7890, etc.
     phone_pattern = r'(\+?\d{1,3}[-.\s]?)?\(?\d{2,4}\)?[-.\s]?\d{3,4}[-.\s]?\d{3,4}'
     return bool(re.search(phone_pattern, text))
 
 def is_valid_confession(text: str) -> Tuple[bool, Optional[str]]:
-    """
-    Validate confession text.
-    Returns (True, None) if valid, (False, reason) if invalid.
-    """
     if contains_link(text):
         return False, "Links are not allowed."
     if contains_phone(text):
@@ -105,20 +78,15 @@ def is_valid_confession(text: str) -> Tuple[bool, Optional[str]]:
 
 # ==================== HELPER FUNCTIONS ====================
 def escape_markdown(text: str) -> str:
-    """Escape special characters for MarkdownV2."""
     special_chars = r'_*[]()~`>#+-=|{}.!'
     return ''.join(f'\\{char}' if char in special_chars else char for char in text)
 
 def get_confession_link(confession_id: int) -> str:
-    """Generate a t.me link to the confession message in the channel."""
-    # This requires the channel username and message ID
     if confession_id not in approved_confessions:
         return ""
     msg_id = approved_confessions[confession_id]["channel_message_id"]
-    # Assuming CHANNEL_ID is a username (e.g., @channel)
     if CHANNEL_ID.startswith("@"):
         return f"https://t.me/{CHANNEL_ID[1:]}/{msg_id}"
-    # For private channels, we can't generate a public link, return empty
     return ""
 
 # ==================== CONVERSATION STATES ====================
@@ -132,7 +100,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send welcome message with Send Confession button."""
     user = update.effective_user
     welcome_text = (
-        f"*Welcome to Confessly, {user.first_name}!*\n\n"
+        f"<b>Welcome to Confessly, {html.escape(user.first_name)}!</b>\n\n"
         "Share your secrets anonymously. Your confession will be posted after admin approval.\n"
         "You can also comment anonymously on others' confessions."
     )
@@ -140,16 +108,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
         welcome_text,
-        parse_mode=ParseMode.MARKDOWN_V2,
+        parse_mode=ParseMode.HTML,
         reply_markup=reply_markup,
     )
 
 # ==================== CONFESSION CONVERSATION ====================
 async def confess_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Entry point for confession flow (callback from start button)."""
     query = update.callback_query
     await query.answer()
-    # Check if user is banned
     user_id = query.from_user.id
     if user_id in banned_users:
         await query.edit_message_text("❌ You are banned from using this bot.")
@@ -159,7 +125,6 @@ async def confess_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     return WAITING_CONFESSION
 
 async def receive_confession(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Receive the confession text, validate, and save as pending."""
     user = update.effective_user
     if user.id in banned_users:
         await update.message.reply_text("❌ You are banned.")
@@ -169,23 +134,20 @@ async def receive_confession(update: Update, context: ContextTypes.DEFAULT_TYPE)
     valid, reason = is_valid_confession(text)
     if not valid:
         await update.message.reply_text(f"❌ Invalid confession: {reason}\nPlease try again.")
-        return WAITING_CONFESSION  # Stay in state
+        return WAITING_CONFESSION
 
-    # Save to pending
     global next_confession_id, total_submitted
     confession_id = next_confession_id
     next_confession_id += 1
     pending_confessions[confession_id] = {"user_id": user.id, "text": text}
     total_submitted += 1
 
-    # Notify user
     await update.message.reply_text("⏳ Your confession has been submitted and is waiting for admin approval.")
 
-    # Send to admin for approval
     admin_text = (
         f"🆕 New Confession Request\n\n"
-        f"User ID: `{user.id}`\n"
-        f"Confession ID: `{confession_id}`\n\n"
+        f"User ID: <code>{user.id}</code>\n"
+        f"Confession ID: <code>{confession_id}</code>\n\n"
         f"Message:\n{html.escape(text)}"
     )
     keyboard = [
@@ -204,52 +166,42 @@ async def receive_confession(update: Update, context: ContextTypes.DEFAULT_TYPE)
             reply_markup=reply_markup,
         )
     except Exception as e:
-        # Admin bot not started? Log error
         print(f"Failed to notify admin: {e}")
 
     return ConversationHandler.END
 
 async def confess_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Cancel confession (if any)."""
     await update.message.reply_text("Confession cancelled.")
     return ConversationHandler.END
 
 # ==================== ADMIN APPROVAL CALLBACKS ====================
 async def admin_approve_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle approve callback from admin."""
     query = update.callback_query
     await query.answer()
-    user_id = query.from_user.id
-    if user_id != ADMIN_ID:
+    if query.from_user.id != ADMIN_ID:
         await query.edit_message_text("⛔ You are not authorized.")
         return
 
-    data = query.data
-    confession_id = int(data.split("_")[1])
+    confession_id = int(query.data.split("_")[1])
     if confession_id not in pending_confessions:
         await query.edit_message_text("❌ Confession not found or already processed.")
         return
 
-    # Get confession data
     confession = pending_confessions.pop(confession_id)
     text = confession["text"]
     user_id_conf = confession["user_id"]
 
-    # Post to channel
-    global next_confession_id, total_approved
-    # Format: use auto_increment ID (already have confession_id)
+    global total_approved
     channel_text = (
         f"💌 New Anonymous Confession\n\n"
         f"{text}\n\n"
         f"#Confession #{confession_id}"
     )
-    # Send to channel
     try:
         sent_message: Message = await context.bot.send_message(
             chat_id=CHANNEL_ID,
             text=channel_text,
         )
-        # Store approved confession with channel message id
         approved_confessions[confession_id] = {
             "channel_message_id": sent_message.message_id,
             "text": text,
@@ -257,7 +209,6 @@ async def admin_approve_callback(update: Update, context: ContextTypes.DEFAULT_T
         }
         total_approved += 1
 
-        # Add reaction and comment buttons under the post
         keyboard = [
             [
                 InlineKeyboardButton("❤️ 0", callback_data=f"reaction_❤️_{confession_id}"),
@@ -275,32 +226,27 @@ async def admin_approve_callback(update: Update, context: ContextTypes.DEFAULT_T
         )
     except Exception as e:
         await query.edit_message_text(f"❌ Failed to post to channel: {e}")
-        # Re-add to pending? For now, just log
         pending_confessions[confession_id] = confession
         return
 
-    # Notify user
     try:
         await context.bot.send_message(
             chat_id=user_id_conf,
             text="✅ Your confession has been approved and posted anonymously!",
         )
     except Exception:
-        pass  # User may have blocked bot
+        pass
 
-    # Update admin message
     await query.edit_message_text(f"✅ Confession #{confession_id} approved and posted.")
 
 async def admin_reject_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle reject callback from admin."""
     query = update.callback_query
     await query.answer()
     if query.from_user.id != ADMIN_ID:
         await query.edit_message_text("⛔ Not authorized.")
         return
 
-    data = query.data
-    confession_id = int(data.split("_")[1])
+    confession_id = int(query.data.split("_")[1])
     if confession_id not in pending_confessions:
         await query.edit_message_text("❌ Confession not found.")
         return
@@ -310,7 +256,6 @@ async def admin_reject_callback(update: Update, context: ContextTypes.DEFAULT_TY
     global total_rejected
     total_rejected += 1
 
-    # Notify user
     try:
         await context.bot.send_message(
             chat_id=user_id,
@@ -322,15 +267,13 @@ async def admin_reject_callback(update: Update, context: ContextTypes.DEFAULT_TY
     await query.edit_message_text(f"❌ Confession #{confession_id} rejected.")
 
 async def admin_ban_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle ban callback from admin."""
     query = update.callback_query
     await query.answer()
     if query.from_user.id != ADMIN_ID:
         await query.edit_message_text("⛔ Not authorized.")
         return
 
-    data = query.data
-    confession_id = int(data.split("_")[1])
+    confession_id = int(query.data.split("_")[1])
     if confession_id not in pending_confessions:
         await query.edit_message_text("❌ Confession not found.")
         return
@@ -341,7 +284,6 @@ async def admin_ban_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     global total_rejected
     total_rejected += 1
 
-    # Notify user (optional)
     try:
         await context.bot.send_message(
             chat_id=user_id,
@@ -354,40 +296,26 @@ async def admin_ban_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 # ==================== REACTION HANDLERS ====================
 async def reaction_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle reaction button clicks."""
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
-    data = query.data
-    # data format: reaction_❤️_123
-    _, reaction, confession_id_str = data.split("_")
+    _, reaction, confession_id_str = query.data.split("_")
     confession_id = int(confession_id_str)
 
     if confession_id not in approved_confessions:
         await query.answer("❌ Confession not found.", show_alert=True)
         return
 
-    # Check if user already reacted with this reaction
-    if user_id in reactions[confession_id][reaction]:
-        await query.answer("You've already reacted with that!", show_alert=True)
-        return
-
-    # Remove user from any previous reaction for this confession? According to spec: "Prevent same user reacting twice."
-    # Usually, one reaction per user total, not per type. We'll implement one reaction per user overall.
-    # So we need to remove previous reaction if any.
+    # Remove user from any previous reaction
     for r in ["❤️", "😂", "😱", "👎"]:
         if user_id in reactions[confession_id][r]:
             reactions[confession_id][r].remove(user_id)
-            break  # Only one previous reaction
+            break
 
-    # Add new reaction
     reactions[confession_id][reaction].add(user_id)
-
-    # Update button counters
     await update_reaction_buttons(context, confession_id)
 
 async def update_reaction_buttons(context: ContextTypes.DEFAULT_TYPE, confession_id: int):
-    """Update reaction buttons with current counts."""
     if confession_id not in approved_confessions:
         return
     msg_id = approved_confessions[confession_id]["channel_message_id"]
@@ -413,7 +341,6 @@ async def update_reaction_buttons(context: ContextTypes.DEFAULT_TYPE, confession
 
 # ==================== COMMENT CONVERSATION ====================
 async def comment_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Entry point for comment flow (callback from comment button)."""
     query = update.callback_query
     await query.answer()
     user = query.from_user
@@ -421,16 +348,12 @@ async def comment_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         await query.edit_message_text("❌ You are banned from commenting.")
         return ConversationHandler.END
 
-    data = query.data
-    confession_id = int(data.split("_")[1])
+    confession_id = int(query.data.split("_")[1])
     if confession_id not in approved_confessions:
         await query.edit_message_text("❌ Confession not found.")
         return ConversationHandler.END
 
-    # Store confession_id in context for later use
     context.user_data["comment_confession_id"] = confession_id
-
-    # Send private message asking for comment
     await query.edit_message_text(
         f"✍️ Type your anonymous comment for Confession #{confession_id}\n"
         "(Your comment will be posted as a reply in the channel.)"
@@ -438,14 +361,13 @@ async def comment_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     return WAITING_COMMENT
 
 async def receive_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Receive comment text, validate, and post as reply in channel."""
     user = update.effective_user
     if user.id in banned_users:
         await update.message.reply_text("❌ You are banned.")
         return ConversationHandler.END
 
     text = update.message.text
-    valid, reason = is_valid_confession(text)  # Reuse same filter
+    valid, reason = is_valid_confession(text)
     if not valid:
         await update.message.reply_text(f"❌ Invalid comment: {reason}\nPlease try again.")
         return WAITING_COMMENT
@@ -455,7 +377,6 @@ async def receive_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text("❌ Confession not found. Please start over.")
         return ConversationHandler.END
 
-    # Post comment as reply in channel
     global next_comment_id, total_comments
     comment_id = next_comment_id
     next_comment_id += 1
@@ -468,31 +389,25 @@ async def receive_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             text=comment_text,
             reply_to_message_id=channel_msg_id,
         )
-        # Store comment tracking
         comments_tracking[comment_id] = {
             "confession_id": confession_id,
             "user_id": user.id,
             "message_id": sent.message_id,
         }
         total_comments += 1
-
-        # Notify commenter
         await update.message.reply_text("✅ Your comment was posted anonymously!")
     except Exception as e:
         await update.message.reply_text(f"❌ Failed to post comment: {e}")
 
-    # Clear user data
     context.user_data.pop("comment_confession_id", None)
     return ConversationHandler.END
 
 async def comment_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Cancel comment flow."""
     await update.message.reply_text("Comment cancelled.")
     return ConversationHandler.END
 
 # ==================== ADMIN PANEL ====================
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show admin panel with buttons."""
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ Unauthorized.")
         return
@@ -508,7 +423,6 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await update.message.reply_text("Admin Panel", reply_markup=reply_markup)
 
 async def admin_stats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle stats button."""
     query = update.callback_query
     await query.answer()
     if query.from_user.id != ADMIN_ID:
@@ -516,17 +430,16 @@ async def admin_stats_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     stats_text = (
-        f"📊 *Statistics*\n\n"
+        f"<b>Statistics</b>\n\n"
         f"Total submitted: {total_submitted}\n"
         f"Approved: {total_approved}\n"
         f"Rejected: {total_rejected}\n"
         f"Total comments: {total_comments}\n"
         f"Pending: {len(pending_confessions)}"
     )
-    await query.edit_message_text(stats_text, parse_mode=ParseMode.MARKDOWN_V2)
+    await query.edit_message_text(stats_text, parse_mode=ParseMode.HTML)
 
 async def admin_pending_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle pending button."""
     query = update.callback_query
     await query.answer()
     if query.from_user.id != ADMIN_ID:
@@ -542,7 +455,6 @@ async def admin_pending_callback(update: Update, context: ContextTypes.DEFAULT_T
     await query.edit_message_text(text)
 
 async def admin_banned_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle banned users button."""
     query = update.callback_query
     await query.answer()
     if query.from_user.id != ADMIN_ID:
@@ -558,7 +470,6 @@ async def admin_banned_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
 # Unban conversation
 async def admin_unban_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Entry point for unban flow."""
     query = update.callback_query
     await query.answer()
     if query.from_user.id != ADMIN_ID:
@@ -569,7 +480,6 @@ async def admin_unban_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     return WAITING_UNBAN_USER_ID
 
 async def admin_unban_receive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Receive user ID to unban."""
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ Unauthorized.")
         return ConversationHandler.END
@@ -589,13 +499,11 @@ async def admin_unban_receive(update: Update, context: ContextTypes.DEFAULT_TYPE
     return ConversationHandler.END
 
 async def admin_unban_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Cancel unban flow."""
     await update.message.reply_text("Unban cancelled.")
     return ConversationHandler.END
 
 # Delete confession conversation
 async def admin_delete_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Entry point for delete confession flow."""
     query = update.callback_query
     await query.answer()
     if query.from_user.id != ADMIN_ID:
@@ -606,7 +514,6 @@ async def admin_delete_entry(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return WAITING_DELETE_CONFESSION_ID
 
 async def admin_delete_receive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Receive confession ID to delete."""
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ Unauthorized.")
         return ConversationHandler.END
@@ -621,7 +528,6 @@ async def admin_delete_receive(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text(f"❌ Confession #{confession_id} not found.")
         return ConversationHandler.END
 
-    # Delete from channel
     msg_id = approved_confessions[confession_id]["channel_message_id"]
     try:
         await context.bot.delete_message(chat_id=CHANNEL_ID, message_id=msg_id)
@@ -629,9 +535,7 @@ async def admin_delete_receive(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text(f"❌ Failed to delete message: {e}")
         return ConversationHandler.END
 
-    # Remove from storage
     del approved_confessions[confession_id]
-    # Also remove reactions? (optional)
     if confession_id in reactions:
         del reactions[confession_id]
 
@@ -639,17 +543,13 @@ async def admin_delete_receive(update: Update, context: ContextTypes.DEFAULT_TYP
     return ConversationHandler.END
 
 async def admin_delete_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Cancel delete flow."""
     await update.message.reply_text("Deletion cancelled.")
     return ConversationHandler.END
 
 # ==================== MAIN ====================
 def main() -> None:
-    """Start the bot."""
-    # Create Application
     application = Application.builder().token(BOT_TOKEN).build()
 
-    # Conversation for confession
     confess_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(confess_entry, pattern="^confess$")],
         states={
@@ -658,7 +558,6 @@ def main() -> None:
         fallbacks=[CommandHandler("cancel", confess_cancel)],
     )
 
-    # Conversation for comment
     comment_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(comment_entry, pattern="^comment_")],
         states={
@@ -667,7 +566,6 @@ def main() -> None:
         fallbacks=[CommandHandler("cancel", comment_cancel)],
     )
 
-    # Conversation for unban
     unban_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(admin_unban_entry, pattern="^admin_unban$")],
         states={
@@ -676,7 +574,6 @@ def main() -> None:
         fallbacks=[CommandHandler("cancel", admin_unban_cancel)],
     )
 
-    # Conversation for delete confession
     delete_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(admin_delete_entry, pattern="^admin_delete$")],
         states={
@@ -685,20 +582,13 @@ def main() -> None:
         fallbacks=[CommandHandler("cancel", admin_delete_cancel)],
     )
 
-    # Add handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(confess_conv)
     application.add_handler(comment_conv)
-
-    # Admin approval callbacks
     application.add_handler(CallbackQueryHandler(admin_approve_callback, pattern="^approve_"))
     application.add_handler(CallbackQueryHandler(admin_reject_callback, pattern="^reject_"))
     application.add_handler(CallbackQueryHandler(admin_ban_callback, pattern="^ban_"))
-
-    # Reaction callbacks
     application.add_handler(CallbackQueryHandler(reaction_callback, pattern="^reaction_"))
-
-    # Admin panel command and callbacks
     application.add_handler(CommandHandler("admin", admin_panel))
     application.add_handler(CallbackQueryHandler(admin_stats_callback, pattern="^admin_stats$"))
     application.add_handler(CallbackQueryHandler(admin_pending_callback, pattern="^admin_pending$"))
@@ -706,7 +596,6 @@ def main() -> None:
     application.add_handler(unban_conv)
     application.add_handler(delete_conv)
 
-    # Start the bot
     print("Bot started...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
